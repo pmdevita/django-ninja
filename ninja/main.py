@@ -10,6 +10,7 @@ from typing import (
     Sequence,
     Tuple,
     Type,
+    TypeVar,
     Union,
 )
 
@@ -26,6 +27,7 @@ from ninja.openapi.urls import get_openapi_urls, get_root_url
 from ninja.parser import Parser
 from ninja.renderers import BaseRenderer, JSONRenderer
 from ninja.router import Router
+from ninja.throttling import BaseThrottle
 from ninja.types import DictStrAny, TCallable
 from ninja.utils import is_debug_server, normalize_path
 
@@ -34,8 +36,9 @@ if TYPE_CHECKING:
 
 __all__ = ["NinjaAPI"]
 
-Exc = Union[Exception, Type[Exception]]
-ExcHandler = Callable[[HttpRequest, Exc], HttpResponse]
+_E = TypeVar("_E", bound=Exception)
+Exc = Union[_E, Type[_E]]
+ExcHandler = Callable[[HttpRequest, Exc[_E]], HttpResponse]
 
 
 class NinjaAPI:
@@ -59,6 +62,7 @@ class NinjaAPI:
         urls_namespace: Optional[str] = None,
         csrf: bool = False,
         auth: Optional[Union[Sequence[Callable], Callable, NOT_SET_TYPE]] = NOT_SET,
+        throttle: Union[BaseThrottle, List[BaseThrottle], NOT_SET_TYPE] = NOT_SET,
         renderer: Optional[BaseRenderer] = None,
         parser: Optional[Parser] = None,
         default_router: Optional[Router] = None,
@@ -109,6 +113,8 @@ class NinjaAPI:
         else:
             self.auth = auth
 
+        self.throttle = throttle
+
         self._routers: List[Tuple[str, Router]] = []
         self.default_router = default_router or Router()
         self.add_router("", self.default_router)
@@ -118,6 +124,7 @@ class NinjaAPI:
         path: str,
         *,
         auth: Any = NOT_SET,
+        throttle: Union[BaseThrottle, List[BaseThrottle], NOT_SET_TYPE] = NOT_SET,
         response: Any = NOT_SET,
         operation_id: Optional[str] = None,
         summary: Optional[str] = None,
@@ -139,6 +146,7 @@ class NinjaAPI:
         return self.default_router.get(
             path,
             auth=auth is NOT_SET and self.auth or auth,
+            throttle=throttle is NOT_SET and self.throttle or throttle,
             response=response,
             operation_id=operation_id,
             summary=summary,
@@ -159,6 +167,7 @@ class NinjaAPI:
         path: str,
         *,
         auth: Any = NOT_SET,
+        throttle: Union[BaseThrottle, List[BaseThrottle], NOT_SET_TYPE] = NOT_SET,
         response: Any = NOT_SET,
         operation_id: Optional[str] = None,
         summary: Optional[str] = None,
@@ -180,6 +189,7 @@ class NinjaAPI:
         return self.default_router.post(
             path,
             auth=auth is NOT_SET and self.auth or auth,
+            throttle=throttle is NOT_SET and self.throttle or throttle,
             response=response,
             operation_id=operation_id,
             summary=summary,
@@ -200,6 +210,7 @@ class NinjaAPI:
         path: str,
         *,
         auth: Any = NOT_SET,
+        throttle: Union[BaseThrottle, List[BaseThrottle], NOT_SET_TYPE] = NOT_SET,
         response: Any = NOT_SET,
         operation_id: Optional[str] = None,
         summary: Optional[str] = None,
@@ -221,6 +232,7 @@ class NinjaAPI:
         return self.default_router.delete(
             path,
             auth=auth is NOT_SET and self.auth or auth,
+            throttle=throttle is NOT_SET and self.throttle or throttle,
             response=response,
             operation_id=operation_id,
             summary=summary,
@@ -241,6 +253,7 @@ class NinjaAPI:
         path: str,
         *,
         auth: Any = NOT_SET,
+        throttle: Union[BaseThrottle, List[BaseThrottle], NOT_SET_TYPE] = NOT_SET,
         response: Any = NOT_SET,
         operation_id: Optional[str] = None,
         summary: Optional[str] = None,
@@ -262,6 +275,7 @@ class NinjaAPI:
         return self.default_router.patch(
             path,
             auth=auth is NOT_SET and self.auth or auth,
+            throttle=throttle is NOT_SET and self.throttle or throttle,
             response=response,
             operation_id=operation_id,
             summary=summary,
@@ -282,6 +296,7 @@ class NinjaAPI:
         path: str,
         *,
         auth: Any = NOT_SET,
+        throttle: Union[BaseThrottle, List[BaseThrottle], NOT_SET_TYPE] = NOT_SET,
         response: Any = NOT_SET,
         operation_id: Optional[str] = None,
         summary: Optional[str] = None,
@@ -303,6 +318,7 @@ class NinjaAPI:
         return self.default_router.put(
             path,
             auth=auth is NOT_SET and self.auth or auth,
+            throttle=throttle is NOT_SET and self.throttle or throttle,
             response=response,
             operation_id=operation_id,
             summary=summary,
@@ -324,6 +340,7 @@ class NinjaAPI:
         path: str,
         *,
         auth: Any = NOT_SET,
+        throttle: Union[BaseThrottle, List[BaseThrottle], NOT_SET_TYPE] = NOT_SET,
         response: Any = NOT_SET,
         operation_id: Optional[str] = None,
         summary: Optional[str] = None,
@@ -342,6 +359,7 @@ class NinjaAPI:
             methods,
             path,
             auth=auth is NOT_SET and self.auth or auth,
+            throttle=throttle is NOT_SET and self.throttle or throttle,
             response=response,
             operation_id=operation_id,
             summary=summary,
@@ -363,6 +381,7 @@ class NinjaAPI:
         router: Union[Router, str],
         *,
         auth: Any = NOT_SET,
+        throttle: Union[BaseThrottle, List[BaseThrottle], NOT_SET_TYPE] = NOT_SET,
         tags: Optional[List[str]] = None,
         parent_router: Optional[Router] = None,
     ) -> None:
@@ -372,6 +391,10 @@ class NinjaAPI:
 
         if auth is not NOT_SET:
             router.auth = auth
+
+        if throttle is not NOT_SET:
+            router.throttle = throttle
+
         if tags is not None:
             router.tags = tags
 
@@ -468,13 +491,15 @@ class NinjaAPI:
         return operation.view_func.__name__
 
     def add_exception_handler(
-        self, exc_class: Type[Exception], handler: ExcHandler
+        self, exc_class: Type[_E], handler: ExcHandler[_E]
     ) -> None:
         assert issubclass(exc_class, Exception)
         self._exception_handlers[exc_class] = handler
 
-    def exception_handler(self, exc_class: Type[Exception]) -> Callable[..., Any]:
-        def decorator(func: Callable) -> Callable:
+    def exception_handler(
+        self, exc_class: Type[Exception]
+    ) -> Callable[[TCallable], TCallable]:
+        def decorator(func: TCallable) -> TCallable:
             self.add_exception_handler(exc_class, func)
             return func
 
@@ -483,13 +508,13 @@ class NinjaAPI:
     def set_default_exception_handlers(self) -> None:
         set_default_exc_handlers(self)
 
-    def on_exception(self, request: HttpRequest, exc: Exc) -> HttpResponse:
+    def on_exception(self, request: HttpRequest, exc: Exc[_E]) -> HttpResponse:
         handler = self._lookup_exception_handler(exc)
         if handler is None:
             raise exc
         return handler(request, exc)
 
-    def _lookup_exception_handler(self, exc: Exc) -> Optional[ExcHandler]:
+    def _lookup_exception_handler(self, exc: Exc[_E]) -> Optional[ExcHandler[_E]]:
         for cls in type(exc).__mro__:
             if cls in self._exception_handlers:
                 return self._exception_handlers[cls]
